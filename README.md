@@ -17,16 +17,6 @@
 
   <p align="center">
     A high-performance CSS optimizer and unused style remover.
-    <br />
-    <a href="https://github.com/antonialoy/cssoptim"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://github.com/antonialoy/cssoptim">View Demo</a>
-    ·
-    <a href="https://github.com/antonialoy/cssoptim/issues">Report Bug</a>
-    ·
-    <a href="https://github.com/antonialoy/cssoptim/issues">Request Feature</a>
-  </p>
 </div>
 
 <!-- TABLE OF CONTENTS -->
@@ -63,8 +53,6 @@ Features:
 * Multiple optimization modes (Safe, Conservative, Strict).
 * Deep integration with Lexbor for robust CSS/HTML parsing.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 ### Built With
 
 This project relies on the following major libraries:
@@ -72,8 +60,6 @@ This project relies on the following major libraries:
 * [Lexbor](https://lexbor.com/) - A fast HTML/CSS parsing and manipulation library.
 * [Unity](https://github.com/ThrowTheSwitch/Unity) - Unit testing framework for C.
 * [argparse](https://github.com/cofyc/argparse) - Command-line argument parsing library.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- GETTING STARTED -->
 ## Getting Started
@@ -97,8 +83,6 @@ To get a local copy up and running, follow these simple steps.
    make
    ```
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 <!-- USAGE EXAMPLES -->
 ## Usage
 
@@ -113,23 +97,10 @@ For more options, run:
 ./build/cssoptim --help
 ```
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
 <!-- LICENSE -->
 ## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- CONTACT -->
-## Contact
-
-Antoni Aloy Torrens - [your_twitter](https://twitter.com/your_username) - email@example.com
-
-Project Link: [https://github.com/antonialoy/cssoptim](https://github.com/antonialoy/cssoptim)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- ACKNOWLEDGMENTS -->
 ## Acknowledgments
@@ -137,8 +108,6 @@ Project Link: [https://github.com/antonialoy/cssoptim](https://github.com/antoni
 * [Best-README-Template](https://github.com/othneildrew/Best-README-Template)
 * [Choose an Open Source License](https://choosealicense.com)
 * [Img Shields](https://shields.io)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [contributors-shield]: https://img.shields.io/github/contributors/antonialoy/cssoptim.svg?style=for-the-badge
