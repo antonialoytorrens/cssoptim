@@ -106,8 +106,6 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ## Acknowledgments
 
 * [Best-README-Template](https://github.com/othneildrew/Best-README-Template)
-* [Choose an Open Source License](https://choosealicense.com)
-* [Img Shields](https://shields.io)
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [contributors-shield]: https://img.shields.io/github/contributors/antonialoy/cssoptim.svg?style=for-the-badge
