@@ -1,10 +1,6 @@
+#include "cssoptim/optimizer.h"
+#include "cssoptim/scanner.h"
 #include "unity.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include "../src/css_proc.h"
-#include "../src/html_scan.h"
 
 static char *read_fixture_file(const char *path, long *out_len) {
   FILE *f = fopen(path, "rb");
@@ -189,19 +185,17 @@ void test_html_tag_removal(void) {
   TEST_ASSERT_NOT_NULL(html_content);
 
   // Scan it
-  string_list_t used_classes;
-  string_list_init(&used_classes);
-  string_list_t used_tags;
-  string_list_init(&used_tags);
+  string_list_t *used_classes = string_list_create();
+  string_list_t *used_tags = string_list_create();
 
-  scan_html(html_content, (size_t)h_len, &used_classes, &used_tags, NULL);
+  scan_html(html_content, (size_t)h_len, used_classes, used_tags, NULL);
 
   // Verify scan results first
-  TEST_ASSERT_TRUE(string_list_contains(&used_tags, "h2"));
-  TEST_ASSERT_TRUE(string_list_contains(&used_tags, "h3"));
-  TEST_ASSERT_TRUE(string_list_contains(&used_classes, "class1"));
-  TEST_ASSERT_TRUE(string_list_contains(&used_classes, "class2"));
-  TEST_ASSERT_TRUE(string_list_contains(&used_classes, "class3"));
+  TEST_ASSERT_TRUE(string_list_contains(used_tags, "h2"));
+  TEST_ASSERT_TRUE(string_list_contains(used_tags, "h3"));
+  TEST_ASSERT_TRUE(string_list_contains(used_classes, "class1"));
+  TEST_ASSERT_TRUE(string_list_contains(used_classes, "class2"));
+  TEST_ASSERT_TRUE(string_list_contains(used_classes, "class3"));
 
   // 2. Read htmlrmtest.css
   long c_len;
@@ -210,10 +204,10 @@ void test_html_tag_removal(void) {
   TEST_ASSERT_NOT_NULL(css_content);
 
   // 3. Optimize
-  OptimizerConfig config = {.used_classes = (const char **)used_classes.items,
-                            .class_count = used_classes.count,
-                            .used_tags = (const char **)used_tags.items,
-                            .tag_count = used_tags.count,
+  OptimizerConfig config = {.used_classes = string_list_items(used_classes),
+                            .class_count = string_list_count(used_classes),
+                            .used_tags = string_list_items(used_tags),
+                            .tag_count = string_list_count(used_tags),
                             .used_attrs = NULL,
                             .attr_count = 0,
                             .mode = LXB_CSS_OPTIM_MODE_STRICT};
@@ -235,27 +229,25 @@ void test_html_tag_removal(void) {
   free(result);
   free(css_content);
   free(html_content);
-  string_list_destroy(&used_classes);
-  string_list_destroy(&used_tags);
+  string_list_destroy(used_classes);
+  string_list_destroy(used_tags);
 }
 
 void test_attr_and_pseudo(void) {
-  // 1. Read attrtest.html
   long h_len;
   char *html = read_fixture_file("tests/fixtures/attrtest.html", &h_len);
   TEST_ASSERT_NOT_NULL(html);
 
-  string_list_t classes, tags, attrs;
-  string_list_init(&classes);
-  string_list_init(&tags);
-  string_list_init(&attrs);
+  string_list_t *classes = string_list_create();
+  string_list_t *tags = string_list_create();
+  string_list_t *attrs = string_list_create();
 
-  scan_html(html, h_len, &classes, &tags, &attrs);
+  scan_html(html, h_len, classes, tags, attrs);
 
   // Check attributes
-  TEST_ASSERT_TRUE(string_list_contains(&attrs, "role=button"));
-  TEST_ASSERT_TRUE(string_list_contains(&attrs, "data-custom=test"));
-  TEST_ASSERT_FALSE(string_list_contains(&attrs, "type=submit"));
+  TEST_ASSERT_TRUE(string_list_contains(attrs, "role=button"));
+  TEST_ASSERT_TRUE(string_list_contains(attrs, "data-custom=test"));
+  TEST_ASSERT_FALSE(string_list_contains(attrs, "type=submit"));
 
   // 2. Read attrtest.css
   long c_len;
@@ -263,12 +255,12 @@ void test_attr_and_pseudo(void) {
   TEST_ASSERT_NOT_NULL(css);
 
   // 3. Optimize
-  OptimizerConfig config = {.used_classes = (const char **)classes.items,
-                            .class_count = classes.count,
-                            .used_tags = (const char **)tags.items,
-                            .tag_count = tags.count,
-                            .used_attrs = (const char **)attrs.items,
-                            .attr_count = attrs.count,
+  OptimizerConfig config = {.used_classes = string_list_items(classes),
+                            .class_count = string_list_count(classes),
+                            .used_tags = string_list_items(tags),
+                            .tag_count = string_list_count(tags),
+                            .used_attrs = string_list_items(attrs),
+                            .attr_count = string_list_count(attrs),
                             .mode = LXB_CSS_OPTIM_MODE_CONSERVATIVE};
   char *result = css_optimize(css, c_len, &config);
 
@@ -302,9 +294,9 @@ void test_attr_and_pseudo(void) {
   free(result);
   free(css);
   free(html);
-  string_list_destroy(&classes);
-  string_list_destroy(&tags);
-  string_list_destroy(&attrs);
+  string_list_destroy(classes);
+  string_list_destroy(tags);
+  string_list_destroy(attrs);
 }
 
 void run_integration_tests(void) {

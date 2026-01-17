@@ -1,16 +1,16 @@
-CC = clang
-CFLAGS = -std=c99 -Wall -Wextra -pedantic -g -Iinclude -Ideps -Ideps/unity -Ideps/argparse
-LDFLAGS = /usr/lib/x86_64-linux-gnu/liblexbor.so
-SANITIZERS = -fsanitize=address,undefined
-
 SRC_DIR = src
 TEST_DIR = tests
 BUILD_DIR = build
 DEPS_DIR = deps
+INC_DIR = include
+
+CC = clang
+CFLAGS = -std=c99 -Wall -Wextra -pedantic -g -I$(INC_DIR) -Ideps -Ideps/unity -Ideps/argparse
+LDFLAGS = /usr/lib/x86_64-linux-gnu/liblexbor.so
 
 # Sources
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+SRCS = $(wildcard $(SRC_DIR)/*.c) $(wildcard $(SRC_DIR)/common/*.c)
+OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 # Dep Sources (argparse needs compilation)
 DEP_SRCS = $(DEPS_DIR)/argparse/argparse.c
@@ -69,7 +69,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 fmt:
-	clang-format -i $(SRC_DIR)/*.c $(SRC_DIR)/*.h $(TEST_DIR)/*.c
+	clang-format -i $(SRCS) $(TEST_SRCS) $(INC_DIR)/cssoptim/*.h
 
 lint:
-	clang-tidy $(SRC_DIR)/*.c $(SRC_DIR)/*.h $(TEST_DIR)/*.c -- $(CFLAGS)
+	clang-tidy $(SRCS) $(TEST_SRCS) -- $(CFLAGS)

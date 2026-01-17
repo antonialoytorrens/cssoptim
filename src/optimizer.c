@@ -1,4 +1,4 @@
-#include "css_proc.h"
+#include "cssoptim/optimizer.h"
 #include <ctype.h>
 #include <lexbor/core/serialize.h>
 #include <lexbor/css/at_rule.h>

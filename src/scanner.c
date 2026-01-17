@@ -1,4 +1,4 @@
-#include "html_scan.h"
+#include "cssoptim/scanner.h"
 #include <ctype.h>
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interfaces/element.h>
@@ -7,63 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Implementation of string_list_t for tracking used CSS classes and tags.
- * This provides a simple generic dynamic array for storing unique strings.
- */
-
-// Initialize a new list with default values
-void string_list_init(string_list_t *list) {
-  list->items = NULL;
-  list->count = 0;
-  list->capacity = 0;
-}
-
-// Free all memory associated with the list and its items
-void string_list_destroy(string_list_t *list) {
-  if (!list)
-    return;
-  for (size_t i = 0; i < list->count; i++) {
-    free(list->items[i]);
-  }
-  free(list->items);
-  list->items = NULL;
-  list->count = 0;
-  list->capacity = 0;
-}
-
-// Add a string to the list if it's not already present
-void string_list_add(string_list_t *list, const char *str) {
-  if (!list || !str)
-    return;
-  // Avoid duplicates
-  if (string_list_contains(list, str))
-    return;
-
-  // Resize buffer if needed
-  if (list->count == list->capacity) {
-    list->capacity = (list->capacity == 0) ? 16 : list->capacity * 2;
-    list->items = realloc(list->items, list->capacity * sizeof(char *));
-  }
-
-  // Store a copy of the string
-  size_t slen = strlen(str);
-  char *dup = malloc(slen + 1);
-  if (dup) {
-    memcpy(dup, str, slen + 1);
-    list->items[list->count++] = dup;
-  }
-}
-
-// Check if the list already contains the specified string
-bool string_list_contains(string_list_t *list, const char *str) {
-  if (!list || !str)
-    return false;
-  for (size_t i = 0; i < list->count; i++) {
-    if (strcmp(list->items[i], str) == 0)
-      return true;
-  }
-  return false;
-}
+/* Implementation of scanner logic using Lexbor. */
 
 /* DOM Traversal Helper
  * Recursively scans an element and its children for the 'class' attribute and
