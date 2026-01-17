@@ -1,6 +1,6 @@
 CC = clang
-CFLAGS = -std=c99 -Wall -Wextra -pedantic -g -Iinclude -Ideps -Ideps/unity -Ideps/zpl -Ideps/argparse
-LDFLAGS = /usr/lib/x86_64-linux-gnu/liblexbor.so -lphysfs
+CFLAGS = -std=c99 -Wall -Wextra -pedantic -g -Iinclude -Ideps -Ideps/unity -Ideps/argparse
+LDFLAGS = /usr/lib/x86_64-linux-gnu/liblexbor.so
 SANITIZERS = -fsanitize=address,undefined
 
 SRC_DIR = src
@@ -69,7 +69,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 fmt:
-	clang-format -i $(SRC_DIR)/*.c $(SRC_DIR)/*.h $(TEST_DIR)/*.c $(TEST_DIR)/*.h include/*.h
+	clang-format -i $(SRC_DIR)/*.c $(SRC_DIR)/*.h $(TEST_DIR)/*.c
 
 lint:
-	clang-tidy $(SRC_DIR)/*.c -- $(CFLAGS)
+	clang-tidy $(SRC_DIR)/*.c $(SRC_DIR)/*.h $(TEST_DIR)/*.c -- $(CFLAGS)

@@ -5,13 +5,13 @@
 #define MAX_INPUT_FILES 64
 
 typedef struct {
-    const char *output_file;
-    const char *css_files[MAX_INPUT_FILES];
-    int css_file_count;
-    const char *html_files[MAX_INPUT_FILES];
-    int html_file_count;
-    const char *reduction;
-    bool verbose;
+  const char *output_file;
+  const char *css_files[MAX_INPUT_FILES];
+  int css_file_count;
+  const char *html_files[MAX_INPUT_FILES];
+  int html_file_count;
+  const char *reduction;
+  bool verbose;
 } css_args_t;
 
 // Returns 0 on success, non-zero on error/help
