@@ -49,7 +49,7 @@
 `cssoptim` is a command-line tool designed to reduce the size of CSS files by identifying and removing unused styles. It scans your HTML and JavaScript files to determine which classes, IDs, and tags are actually in use, and then prunes the CSS accordingly.
 
 Features:
-* Fast and efficient scanning of HTML and JS.
+* Fast and efficient scanning of HTML and CSS files.
 * Multiple optimization modes (Safe, Conservative, Strict).
 * Deep integration with Lexbor for robust CSS/HTML parsing.
 
