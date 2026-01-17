@@ -20,7 +20,19 @@ void test_css_optimize_no_filter(void) {
     const char *css = ".foo { color: red; } .bar { color: blue; }";
     const char *used[] = {"foo"};
     
-    char *result = css_optimize(css, strlen(css), used, 1, NULL, 0);
+    OptimizerConfig config = {
+        .used_classes = used,
+        .class_count = 1,
+        .used_tags = NULL,
+        .tag_count = 0,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_SAFE,
+        .remove_unused_keyframes = true,
+        .remove_form_pseudoelements = false
+    };
+    
+    char *result = css_optimize(css, strlen(css), &config);
     TEST_ASSERT_NOT_NULL(result);
     // Should contain foo but not bar
     TEST_ASSERT_NOT_NULL(strstr(result, ".foo"));

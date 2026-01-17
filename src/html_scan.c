@@ -62,34 +62,56 @@ bool string_list_contains(string_list_t *list, const char *str) {
 /* DOM Traversal Helper
  * Recursively scans an element and its children for the 'class' attribute and tag names.
  */
-static lxb_status_t scan_element(lxb_dom_element_t *element, string_list_t *classes, string_list_t *tags) {
-    size_t value_len = 0;
-    
-    // 1. Collect tag name if tags list is provided
+static lxb_status_t scan_element(lxb_dom_element_t *element, string_list_t *classes, string_list_t *tags, string_list_t *attrs) {
+    // 1. Collect tag name
     if (tags) {
-        const lxb_char_t *tag_name = lxb_dom_element_local_name(element, &value_len);
-        if (tag_name && value_len > 0) {
-            char *name_copy = malloc(value_len + 1);
-            if (name_copy) {
-                memcpy(name_copy, tag_name, value_len);
-                name_copy[value_len] = '\0';
-                string_list_add(tags, name_copy);
-                free(name_copy);
-            }
+        const lxb_char_t *local_name = lxb_dom_element_local_name(element, NULL);
+        if (local_name) {
+            string_list_add(tags, (const char *)local_name);
         }
     }
 
-    // 2. Collect classes if classes list is provided
+    // 2. Collect attributes
+    if (attrs) {
+        lxb_dom_attr_t *attr = lxb_dom_element_first_attribute(element);
+        while (attr) {
+            const lxb_char_t *name = lxb_dom_attr_local_name(attr, NULL);
+            size_t val_len = 0;
+            const lxb_char_t *value = lxb_dom_attr_value(attr, &val_len);
+
+            if (name) {
+                // Add plain attribute name
+                string_list_add(attrs, (const char *)name);
+
+                if (value && val_len > 0) {
+                    // Add name=value pair
+                    size_t name_len = strlen((const char *)name);
+                    char *pair = malloc(name_len + val_len + 2);
+                    if (pair) {
+                        memcpy(pair, name, name_len);
+                        pair[name_len] = '=';
+                        memcpy(pair + name_len + 1, value, val_len);
+                        pair[name_len + 1 + val_len] = '\0';
+                        string_list_add(attrs, pair);
+                        free(pair);
+                    }
+                }
+            }
+            // Move to next attribute
+            lxb_dom_node_t *next_node = lxb_dom_node_next(lxb_dom_interface_node(attr));
+            attr = (next_node && next_node->type == LXB_DOM_NODE_TYPE_ATTRIBUTE) ? (lxb_dom_attr_t *)next_node : NULL;
+        }
+    }
+
+    // 3. Collect classes
     if (classes) {
-        const lxb_char_t *class_attr = lxb_dom_element_get_attribute(element, (const lxb_char_t*)"class", 5, &value_len);
-        
+        size_t value_len = 0;
+        const lxb_char_t *class_attr = lxb_dom_element_get_attribute(element, (const lxb_char_t *)"class", 5, &value_len);
         if (class_attr && value_len > 0) {
-            // Split the class string by whitespace into individual classes
             char *copy = malloc(value_len + 1);
             if (copy) {
                 memcpy(copy, class_attr, value_len);
                 copy[value_len] = '\0';
-                
                 char *token = strtok(copy, " \t\n\r");
                 while (token) {
                     string_list_add(classes, token);
@@ -99,52 +121,47 @@ static lxb_status_t scan_element(lxb_dom_element_t *element, string_list_t *clas
             }
         }
     }
-    
-    // Traverse children nodes
-    lxb_dom_node_t *node = lxb_dom_interface_node(element);
-    lxb_dom_node_t *child = node->first_child;
-    
+
+    // Recursive traversal
+    lxb_dom_node_t *child = lxb_dom_node_first_child(lxb_dom_interface_node(element));
     while (child) {
         if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            scan_element(lxb_dom_interface_element(child), classes, tags);
+            scan_element(lxb_dom_interface_element(child), classes, tags, attrs);
         }
         child = child->next;
     }
-    
+
     return LXB_STATUS_OK;
 }
 
-// Public API: Scans an HTML string for all unique CSS classes and tags
-void scan_html(const char *content, size_t length, string_list_t *classes, string_list_t *tags) {
+void scan_html(const char *content, size_t length, string_list_t *classes, string_list_t *tags, string_list_t *attrs) {
     if (!content || length == 0) return;
 
-    lxb_html_document_t *document = lxb_html_document_create();
-    if (!document) return;
+    lxb_html_parser_t *parser = lxb_html_parser_create();
+    if (!parser) return;
+    lxb_html_parser_init(parser);
 
-    // Parse HTML content using Lexbor
-    lxb_status_t status = lxb_html_document_parse(document, (const lxb_char_t *)content, length);
-    if (status != LXB_STATUS_OK) {
-        lxb_html_document_destroy(document);
+    lxb_html_document_t *document = lxb_html_parse(parser, (const lxb_char_t *)content, length);
+    if (!document) {
+        lxb_html_parser_destroy(parser);
         return;
     }
-    
-    // Start scanning from the body element
+
     lxb_dom_element_t *body = (lxb_dom_element_t *)lxb_html_document_body_element(document);
     if (body) {
-        scan_element(body, classes, tags);
+        scan_element(body, classes, tags, attrs);
     } else {
-        // Fallback: iterate from the root of the document
-        lxb_dom_node_t *root = lxb_dom_interface_node(document);
-        lxb_dom_node_t *child = root->first_child;
-        while (child) {
-            if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-                scan_element(lxb_dom_interface_element(child), classes, tags);
+        lxb_dom_node_t *node = lxb_dom_node_first_child(lxb_dom_interface_node(document));
+        while (node) {
+            if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                scan_element(lxb_dom_interface_element(node), classes, tags, attrs);
             }
-            child = child->next;
+            node = node->next;
         }
     }
 
     lxb_html_document_destroy(document);
+    lxb_html_parser_destroy(parser);
 }
 
 // Public API: Scans JS/TS/JSX content for potential class names in strings

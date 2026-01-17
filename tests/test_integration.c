@@ -60,7 +60,16 @@ void test_manual_minified(void) {
     const char *css = ".d-flex{display:flex!important}.flex-column{flex-direction:column!important}.h-100{height:100%!important}.bg-turquoise{background-color:turquoise!important}.unused{color:red}";
     const char *used[] = {"d-flex", "flex-column", "h-100", "bg-turquoise"};
     
-    char *result = css_optimize(css, strlen(css), used, 4, NULL, 0);
+    OptimizerConfig config = {
+        .used_classes = used,
+        .class_count = 4,
+        .used_tags = NULL,
+        .tag_count = 0,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_STRICT
+    };
+    char *result = css_optimize(css, strlen(css), &config);
     TEST_ASSERT_NOT_NULL(result);
     
     TEST_ASSERT_NOT_NULL(strstr(result, ".d-flex"));
@@ -76,7 +85,16 @@ void test_manual_minified_media_queries(void) {
     const char *css = ".d-flex{display:flex!important}.flex-column{flex-direction:column!important}.h-100{height:100%!important}.bg-turquoise{background-color:turquoise!important}.unused{color:red}@media{.mediatest{color:red}}";
     const char *used[] = {"d-flex", "flex-column", "h-100", "bg-turquoise", "mediatest"};
     
-    char *result = css_optimize(css, strlen(css), used, 5, NULL, 0);
+    OptimizerConfig config = {
+        .used_classes = used,
+        .class_count = 5,
+        .used_tags = NULL,
+        .tag_count = 0,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_STRICT
+    };
+    char *result = css_optimize(css, strlen(css), &config);
     TEST_ASSERT_NOT_NULL(result);
     
     TEST_ASSERT_NOT_NULL(strstr(result, ".d-flex"));
@@ -101,7 +119,17 @@ void test_complex_filtering(void) {
     const char *used[] = {"used"};
     
     // Explicitly using length
-    char *result = css_optimize(css, strlen(css), used, 1, NULL, 0);
+    OptimizerConfig config = {
+        .used_classes = used,
+        .class_count = 1,
+        .used_tags = NULL,
+        .tag_count = 0,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_SAFE,
+        .remove_unused_keyframes = true
+    };
+    char *result = css_optimize(css, strlen(css), &config);
     TEST_ASSERT_NOT_NULL(result);
     // Print for debug
     // printf("Result: %s\n", result);
@@ -128,7 +156,16 @@ void test_bootstrap_reduction(void) {
     // Simulate bootstrap.html classes
     const char *used[] = {"d-flex", "flex-column", "h-100", "bg-turquoise"};
     
-    char *result = css_optimize(css, len, used, 4, NULL, 0);
+    OptimizerConfig config = {
+        .used_classes = used,
+        .class_count = 4,
+        .used_tags = NULL,
+        .tag_count = 0,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_STRICT
+    };
+    char *result = css_optimize(css, len, &config);
     TEST_ASSERT_NOT_NULL(result);
     
     // Should contain used classes
@@ -159,7 +196,7 @@ void test_html_tag_removal(void) {
     string_list_t used_tags;
     string_list_init(&used_tags);
     
-    scan_html(html_content, h_len, &used_classes, &used_tags);
+    scan_html(html_content, h_len, &used_classes, &used_tags, NULL);
     
     // Verify scan results first
     TEST_ASSERT_TRUE(string_list_contains(&used_tags, "h2"));
@@ -174,9 +211,16 @@ void test_html_tag_removal(void) {
     TEST_ASSERT_NOT_NULL(css_content);
     
     // 3. Optimize
-    char *result = css_optimize(css_content, c_len, 
-                               (const char**)used_classes.items, used_classes.count,
-                               (const char**)used_tags.items, used_tags.count);
+    OptimizerConfig config = {
+        .used_classes = (const char**)used_classes.items,
+        .class_count = used_classes.count,
+        .used_tags = (const char**)used_tags.items,
+        .tag_count = used_tags.count,
+        .used_attrs = NULL,
+        .attr_count = 0,
+        .mode = LXB_CSS_OPTIM_MODE_STRICT
+    };
+    char *result = css_optimize(css_content, c_len, &config);
     
     TEST_ASSERT_NOT_NULL(result);
     printf("Result tag removal: %s\n", result);
@@ -199,6 +243,76 @@ void test_html_tag_removal(void) {
     string_list_destroy(&used_tags);
 }
 
+void test_attr_and_pseudo(void) {
+    // 1. Read attrtest.html
+    PHYSFS_sint64 h_len;
+    char *html = read_physfs_file("tests/fixtures/attrtest.html", &h_len);
+    TEST_ASSERT_NOT_NULL(html);
+    
+    string_list_t classes, tags, attrs;
+    string_list_init(&classes);
+    string_list_init(&tags);
+    string_list_init(&attrs);
+    
+    scan_html(html, h_len, &classes, &tags, &attrs);
+    
+    // Check attributes
+    TEST_ASSERT_TRUE(string_list_contains(&attrs, "role=button"));
+    TEST_ASSERT_TRUE(string_list_contains(&attrs, "data-custom=test"));
+    TEST_ASSERT_FALSE(string_list_contains(&attrs, "type=submit"));
+    
+    // 2. Read attrtest.css
+    PHYSFS_sint64 c_len;
+    char *css = read_physfs_file("tests/fixtures/attrtest.css", &c_len);
+    TEST_ASSERT_NOT_NULL(css);
+    
+    // 3. Optimize
+    OptimizerConfig config = {
+        .used_classes = (const char**)classes.items,
+        .class_count = classes.count,
+        .used_tags = (const char**)tags.items,
+        .tag_count = tags.count,
+        .used_attrs = (const char**)attrs.items,
+        .attr_count = attrs.count,
+        .mode = LXB_CSS_OPTIM_MODE_CONSERVATIVE
+    };
+    char *result = css_optimize(css, c_len, &config);
+    
+    TEST_ASSERT_NOT_NULL(result);
+    printf("Result Attr/Pseudo:\n%s\n", result);
+    
+    // 4. Assertions
+    // Charset MUST have semicolon
+    TEST_ASSERT_NOT_NULL(strstr(result, "@charset \"UTF-8\";"));
+    
+    // role="button" should be kept
+    TEST_ASSERT_NOT_NULL(strstr(result, "[role=\"button\"]"));
+    
+    // type="submit" should be removed
+    TEST_ASSERT_NULL(strstr(result, "[type=\"submit\"]"));
+    
+    // data-custom="test" should be kept
+    TEST_ASSERT_NOT_NULL(strstr(result, "[data-custom=\"test\"]"));
+    
+    // Browser pseudos should be kept
+    TEST_ASSERT_NOT_NULL(strstr(result, "-webkit-input-placeholder"));
+    TEST_ASSERT_NOT_NULL(strstr(result, "-moz-placeholder"));
+    
+    // button:focus should be kept
+    TEST_ASSERT_NOT_NULL(strstr(result, "button:focus"));
+    
+    // span:focus should be removed (no span in HTML)
+    TEST_ASSERT_NULL(strstr(result, "span:focus"));
+    
+    // Cleanup
+    free(result);
+    free(css);
+    free(html);
+    string_list_destroy(&classes);
+    string_list_destroy(&tags);
+    string_list_destroy(&attrs);
+}
+
 void run_integration_tests(void) {
     RUN_TEST(test_physfs_setup_and_read_fixture);
     RUN_TEST(test_manual_minified);
@@ -206,4 +320,5 @@ void run_integration_tests(void) {
     RUN_TEST(test_complex_filtering);
     RUN_TEST(test_bootstrap_reduction);
     RUN_TEST(test_html_tag_removal);
+    RUN_TEST(test_attr_and_pseudo);
 }

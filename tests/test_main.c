@@ -6,6 +6,8 @@ void run_css_tests(void);
 void run_html_tests(void);
 void run_arg_tests(void);
 void run_integration_tests(void);
+void run_mode_tests(void);
+void run_optimization_tests(void);
 
 #include <physfs.h>
 
@@ -37,6 +39,8 @@ int main(void) {
     run_html_tests();
     run_arg_tests();
     run_integration_tests();
+    run_mode_tests();
+    run_optimization_tests();
     
     PHYSFS_deinit();
     return UNITY_END();

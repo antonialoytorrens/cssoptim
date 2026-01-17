@@ -45,6 +45,7 @@ int parse_args(int argc, const char **argv, css_args_t *args) {
         OPT_HELP(),
         OPT_BOOLEAN('v', "verbose", &args->verbose, "show verbose output", NULL, 0, 0),
         OPT_STRING('o', "output", &args->output_file, "output file path", NULL, 0, 0),
+        OPT_STRING('r', "reduction", &args->reduction, "reduction mode: strict, safe, conservative (default: safe)", NULL, 0, 0),
         OPT_BOOLEAN(0, "css", NULL, "list of CSS files", css_cb, (intptr_t)args, 0),
         OPT_BOOLEAN(0, "html", NULL, "list of HTML/JS files", html_cb, (intptr_t)args, 0),
         OPT_END(),

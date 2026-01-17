@@ -22,7 +22,7 @@ void test_scan_html_basic(void) {
     string_list_t list;
     string_list_init(&list);
     
-    scan_html(html, strlen(html), &list, NULL);
+    scan_html(html, strlen(html), &list, NULL, NULL);
     
     TEST_ASSERT_TRUE(string_list_contains(&list, "foo"));
     TEST_ASSERT_TRUE(string_list_contains(&list, "bar"));

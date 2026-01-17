@@ -93,6 +93,8 @@ int main(int argc, const char **argv) {
     string_list_init(&used_classes);
     string_list_t used_tags;
     string_list_init(&used_tags);
+    string_list_t used_attrs;
+    string_list_init(&used_attrs);
     
     // Process HTML/JS files
     for (int i = 0; i < args.html_file_count; i++) {
@@ -107,7 +109,7 @@ int main(int argc, const char **argv) {
         
         if (has_extension(fname, "html") || has_extension(fname, "htm")) {
             if (args.verbose) printf("Scanning HTML: %s\n", fname);
-            scan_html(content, len, &used_classes, &used_tags);
+            scan_html(content, len, &used_classes, &used_tags, &used_attrs);
         } else if (has_extension(fname, "js") || has_extension(fname, "jsx") || has_extension(fname, "ts")) {
             if (args.verbose) printf("Scanning JS: %s\n", fname);
             scan_js(content, len, &used_classes);
@@ -115,7 +117,7 @@ int main(int argc, const char **argv) {
             // If explicitly passed under --html but unknown extension, assume HTML?
             // Or just scan anyway as HTML.
             if (args.verbose) printf("Scanning unknown file type as HTML: %s\n", fname);
-            scan_html(content, len, &used_classes, &used_tags);
+            scan_html(content, len, &used_classes, &used_tags, &used_attrs);
         }
         
         free(content);
@@ -130,8 +132,26 @@ int main(int argc, const char **argv) {
         for (size_t i = 0; i < used_tags.count; i++) {
             printf("  - %s\n", used_tags.items[i]);
         }
+        printf("Collected %zu unique attributes:\n", used_attrs.count);
+        for (size_t i = 0; i < used_attrs.count; i++) {
+            printf("  - %s\n", used_attrs.items[i]);
+        }
     }
     
+    // Determine reduction mode
+    css_optim_mode_t mode = LXB_CSS_OPTIM_MODE_SAFE; // Default
+    if (args.reduction) {
+        if (strcmp(args.reduction, "strict") == 0) {
+            mode = LXB_CSS_OPTIM_MODE_STRICT;
+        } else if (strcmp(args.reduction, "conservative") == 0) {
+            mode = LXB_CSS_OPTIM_MODE_CONSERVATIVE;
+        } else if (strcmp(args.reduction, "safe") == 0) {
+            mode = LXB_CSS_OPTIM_MODE_SAFE;
+        } else {
+            fprintf(stderr, "Warning: Unknown reduction mode '%s'. Using 'safe'.\n", args.reduction);
+        }
+    }
+
     // Process CSS files
     bool success = true;
     for (int i = 0; i < args.css_file_count; i++) {
@@ -141,10 +161,20 @@ int main(int argc, const char **argv) {
         size_t len = 0;
         char *content = read_file(fname, &len);
         if (content) {
-            // Pass both used classes and used tags to the optimizer
-            char *optimized = css_optimize(content, len, 
-                                          (const char **)used_classes.items, used_classes.count,
-                                          (const char **)used_tags.items, used_tags.count);
+            // Pass used classes, tags, and attributes to the optimizer
+            OptimizerConfig config = {
+                .used_classes = (const char **)used_classes.items,
+                .class_count = used_classes.count,
+                .used_tags = (const char **)used_tags.items,
+                .tag_count = used_tags.count,
+                .used_attrs = (const char **)used_attrs.items,
+                .attr_count = used_attrs.count,
+                .mode = mode,
+                .remove_unused_keyframes = true,
+                .remove_form_pseudoelements = (used_tags.count > 0) // Only enable if we have tag info
+            };
+
+            char *optimized = css_optimize(content, len, &config);
             if (optimized) {
                 if (args.output_file) {
                     // Write to file using PhysFS
@@ -170,6 +200,7 @@ int main(int argc, const char **argv) {
     
     string_list_destroy(&used_classes);
     string_list_destroy(&used_tags);
+    string_list_destroy(&used_attrs);
     PHYSFS_deinit();
     
     return success ? 0 : 1;

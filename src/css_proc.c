@@ -122,22 +122,19 @@ static void process_nested_block(lxb_css_at_rule__undef_t *undef, nested_cb_t cb
 
 // --- Forward Declarations ---
 // --- Forward Declarations ---
-static void pass1_filter_rules(lxb_css_rule_t *rule, char **used_classes, int class_count, char **used_tags, int tag_count);
+static void pass1_filter_rules(lxb_css_rule_t *rule, OptimizerConfig *config);
 static void pass2_collect_deps(lxb_css_rule_t *rule, dep_list_t *vars, dep_list_t *anims);
-static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_list_t *used_anims);
+static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_list_t *used_anims, OptimizerConfig *config);
 
 // --- Wrappers and Helpers ---
 
 // Pass 1 Wrapper
 struct pass1_ctx {
-    char **used_classes;
-    int count;
-    char **used_tags;
-    int tag_count;
+    OptimizerConfig *config;
 };
 static void pass1_cb(lxb_css_rule_t *root, void *ctx) {
     struct pass1_ctx *p1 = (struct pass1_ctx *)ctx;
-    pass1_filter_rules(root, p1->used_classes, p1->count, p1->used_tags, p1->tag_count);
+    pass1_filter_rules(root, p1->config);
 }
 
 // Pass 2 Wrapper
@@ -154,10 +151,11 @@ static void pass2_cb(lxb_css_rule_t *root, void *ctx) {
 struct pass3_ctx {
     dep_list_t *vars;
     dep_list_t *anims;
+    OptimizerConfig *config;
 };
 static void pass3_cb(lxb_css_rule_t *root, void *ctx) {
     struct pass3_ctx *p3 = (struct pass3_ctx *)ctx;
-    pass3_refine_rules(root, p3->vars, p3->anims);
+    pass3_refine_rules(root, p3->vars, p3->anims, p3->config);
 }
 
 // Helper: Check if class is used
@@ -175,8 +173,6 @@ static bool is_class_used(const char *class_name, size_t len, const char **used_
 static bool is_tag_used(const char *tag_name, size_t len, const char **used_tags, size_t tag_count) {
     if (!used_tags || tag_count == 0 || !tag_name) return false;
     
-    // Case-insensitive check for tags is safer, though inputs are likely normalized.
-    // Assuming simple case for now.
     for (size_t i = 0; i < tag_count; i++) {
         if (strncasecmp(tag_name, used_tags[i], len) == 0 && used_tags[i][len] == '\0') {
             return true;
@@ -185,29 +181,163 @@ static bool is_tag_used(const char *tag_name, size_t len, const char **used_tags
     return false;
 }
 
+// Helper: Check if attribute is used
+static bool is_attr_used(lxb_css_selector_t *sel, const char **used_attrs, size_t attr_count) {
+    if (!used_attrs || attr_count == 0 || !sel->name.data) return false;
+
+    // Check attribute name + value if present
+    char *match = NULL;
+    if (sel->u.attribute.value.data) {
+        size_t nlen = sel->name.length;
+        size_t vlen = sel->u.attribute.value.length;
+        match = malloc(nlen + vlen + 2);
+        if (match) {
+            memcpy(match, sel->name.data, nlen);
+            match[nlen] = '=';
+            memcpy(match + nlen + 1, sel->u.attribute.value.data, vlen);
+            match[nlen + 1 + vlen] = '\0';
+        }
+    } else {
+        match = malloc(sel->name.length + 1);
+        if (match) {
+            memcpy(match, sel->name.data, sel->name.length);
+            match[sel->name.length] = '\0';
+        }
+    }
+
+    if (!match) return false;
+
+    bool found = false;
+    for (size_t i = 0; i < attr_count; i++) {
+        if (strcmp(match, used_attrs[i]) == 0) {
+            found = true;
+            break;
+        }
+    }
+    free(match);
+    return found;
+}
+
 // Helper: Check selector chain
-static bool should_keep_selector_node(lxb_css_selector_list_t *list, const char **used_classes, size_t class_count, const char **used_tags, size_t tag_count) {
+
+
+static bool check_form_pseudo_removal(const char *name, OptimizerConfig *config) {
+   if (!config->remove_form_pseudoelements) return false; // Do not remove
+   
+   if (strcasecmp(name, "file-selector-button") == 0 || strcasecmp(name, "-webkit-file-upload-button") == 0 || strcasecmp(name, "::file-selector-button") == 0 || strcasecmp(name, "::-webkit-file-upload-button") == 0) {
+        bool has_file_input = false;
+        for(size_t i=0; i<config->attr_count; i++) {
+            if (strcmp(config->used_attrs[i], "type=file") == 0) {
+                has_file_input = true;
+                break;
+            }
+        }
+        if (!has_file_input) return true; // Remove
+   }
+   else if (strcasecmp(name, "-webkit-inner-spin-button") == 0 || strcasecmp(name, "::-webkit-inner-spin-button") == 0) {
+        bool has_number_input = false;
+        for(size_t i=0; i<config->attr_count; i++) {
+            if (strcmp(config->used_attrs[i], "type=number") == 0) {
+                has_number_input = true;
+                break;
+            }
+        }
+        if (!has_number_input) return true; 
+   }
+   else if (strcasecmp(name, "-webkit-calendar-picker-indicator") == 0 || strcasecmp(name, "-webkit-datetime-edit-day-field") == 0 ||
+            strcasecmp(name, "::-webkit-calendar-picker-indicator") == 0 || strcasecmp(name, "::-webkit-datetime-edit-day-field") == 0) {
+        bool has_date_input = false;
+         for(size_t i=0; i<config->attr_count; i++) {
+            if (strcmp(config->used_attrs[i], "type=date") == 0 ||
+                strcmp(config->used_attrs[i], "type=time") == 0 ||
+                strcmp(config->used_attrs[i], "type=datetime-local") == 0) {
+                has_date_input = true;
+                break;
+            }
+        }
+        if (!has_date_input) return true; 
+   }
+   else if (strcasecmp(name, "::-moz-focus-inner") == 0 || strcasecmp(name, "-moz-focus-inner") == 0) {
+       // Only for button and input
+       bool has_button_or_input = false;
+       for(size_t i=0; i<config->tag_count; i++) {
+           if (strcasecmp(config->used_tags[i], "button") == 0 || strcasecmp(config->used_tags[i], "input") == 0) {
+               has_button_or_input = true;
+               break;
+           }
+       }
+       if (!has_button_or_input) return true;
+   }
+   else if (strcasecmp(name, "::-webkit-search-decoration") == 0 || strcasecmp(name, "-webkit-search-decoration") == 0) {
+        bool has_search_input = false;
+        for(size_t i=0; i<config->attr_count; i++) {
+            if (strcmp(config->used_attrs[i], "type=search") == 0) {
+                has_search_input = true;
+                break;
+            }
+        }
+        if (!has_search_input) return true;
+   }
+   else if (strcasecmp(name, "::-webkit-color-swatch-wrapper") == 0 || strcasecmp(name, "-webkit-color-swatch-wrapper") == 0) {
+        bool has_color_input = false;
+        for(size_t i=0; i<config->attr_count; i++) {
+            if (strcmp(config->used_attrs[i], "type=color") == 0) {
+                has_color_input = true;
+                break;
+            }
+        }
+        if (!has_color_input) return true;
+   }
+   return false;
+}
+
+static bool should_remove_pseudo_element(lxb_css_selector_t *sel, OptimizerConfig *config) {
+   if (sel->name.length > 0) {
+       const char *name = (const char*)sel->name.data;
+       return check_form_pseudo_removal(name, config);
+   }
+   return false;
+}
+
+static bool should_keep_selector_node(lxb_css_selector_list_t *list, OptimizerConfig *config) {
     lxb_css_selector_t *sel = list->first;
     while (sel) {
         if (sel->type == LXB_CSS_SELECTOR_TYPE_CLASS) {
-            if (!is_class_used((const char *)sel->name.data, sel->name.length, used_classes, class_count)) {
+            if (!is_class_used((const char *)sel->name.data, sel->name.length, config->used_classes, config->class_count)) {
                 return false; 
             }
         } else if (sel->type == LXB_CSS_SELECTOR_TYPE_ELEMENT) {
-            // Check if it's a known tag that should be filtered
-            if (tag_count > 0 && sel->name.length > 0) {
-                 // Standard HTML tags only. Ignore * or complex namespaces if any for now.
-                 if (strcmp((const char*)sel->name.data, "*") != 0 && 
-                    !is_tag_used((const char*)sel->name.data, sel->name.length, used_tags, tag_count)) {
-                     // printf("Removing unused tag: %.*s\n", (int)sel->name.length, sel->name.data);
+            // Check for universal selector '*'
+            if (sel->name.length == 1 && sel->name.data[0] == '*') {
+                if (config->mode == LXB_CSS_OPTIM_MODE_SAFE || config->mode == LXB_CSS_OPTIM_MODE_CONSERVATIVE) {
+                    // SAFE and CONSERVATIVE always keep universal selectors
+                    return true;
+                }
+            }
+            
+            if (config->tag_count > 0 && sel->name.length > 0) {
+                 bool is_universal = (sel->name.length == 1 && sel->name.data[0] == '*');
+                 if (!is_universal && !is_tag_used((const char*)sel->name.data, sel->name.length, config->used_tags, config->tag_count)) {
                      return false;
                  }
             }
-        } else if (sel->type == LXB_CSS_SELECTOR_TYPE_PSEUDO_CLASS_FUNCTION) {
-             // Example: :not(.class)
-             // We need to inspect arguments? 
-             // Lexbor might store nested selectors in sel->u.func.selector?
-             // Actually, verify struct structure first.
+        } else if (sel->type == LXB_CSS_SELECTOR_TYPE_ATTRIBUTE) {
+            if (!is_attr_used(sel, config->used_attrs, config->attr_count)) {
+                return false;
+            }
+        } else if (sel->type == LXB_CSS_SELECTOR_TYPE_PSEUDO_ELEMENT) {
+            if (should_remove_pseudo_element(sel, config)) {
+                return false;
+            }
+
+            // Conservative mode keeps browser-specific pseudo-elements
+            if (config->mode == LXB_CSS_OPTIM_MODE_CONSERVATIVE) {
+                if (sel->name.length > 5 && 
+                    (strncasecmp((const char *)sel->name.data, "-webkit-", 8) == 0 ||
+                     strncasecmp((const char *)sel->name.data, "-moz-", 5) == 0)) {
+                    // Keep browser-prefixed pseudo-elements if not explicitly removed by above check
+                }
+            }
         }
         sel = sel->next;
     }
@@ -217,19 +347,45 @@ static bool should_keep_selector_node(lxb_css_selector_list_t *list, const char 
 // --- Implementations ---
 
 // Helper: Check if a bad style rule (raw string) should be kept
-static bool should_keep_bad_style(const lxb_char_t *data, size_t len, char **used_classes, int class_count, char **used_tags, int tag_count) {
-    (void)used_tags; (void)tag_count;
+static bool should_keep_bad_style(const lxb_char_t *data, size_t len, OptimizerConfig *config) {
+    (void)config;
     if (!data || len == 0) return false;
+    
+    // Check if this BAD_STYLE rule contains any form pseudo-elements we want to remove
+    if (config->remove_form_pseudoelements) {
+        // Quick string search for known pseudos
+        // Ensure to handle potential overlaps or simple inclusion
+        // Since these are specific names, strstr is okay if we verify full name or prefix/suffix.
+        char *copy = malloc(len + 1);
+        if (copy) {
+            memcpy(copy, data, len);
+            copy[len] = '\0';
+            
+            // Removing :: is cleaner for checking vs our helper
+            char *p = copy;
+            while ((p = strstr(p, "::"))) {
+                 char *pseudo = p; // Starts with ::
+                 // Find end of identifier
+                 char *end = pseudo + 2;
+                 while (*end && (isalnum(*end) || *end == '-' || *end == '_')) end++;
+                 
+                 char saved = *end;
+                 *end = '\0';
+                 if (check_form_pseudo_removal(pseudo, config)) {
+                     free(copy);
+                     return false; // Remove this rule
+                 }
+                 *end = saved;
+                 p = end;
+            }
+            free(copy);
+        }
+    }
     
     bool has_classes = false;
     bool has_used_class = false;
-    // Track tags implicitly? Bad style parsing is weak.
-    // If it looks like a tag (starts with alpha, no dot/hash prefix), we should check it?
-    // Doing full tokenization on bad style is hard. 
-    // Current requirement: "h1 is not used, remove it".
-    // "h1" likely comes as a STYLE rule, not bad style. 
-    // For bad style, let's keep existing class logic for now, or maybe expand if needed later.
-    // Actually, let's play safe and ONLY filter based on classes in bad style for now to avoid false negatives on property values taking "tag-like" names.
+    bool has_tags = false;
+    bool has_used_tag = false;
     
     size_t i = 0;
     while (i < len) {
@@ -247,25 +403,55 @@ static bool should_keep_bad_style(const lxb_char_t *data, size_t len, char **use
                 }
                 size_t name_len = i - start;
                 
-                if (is_class_used((const char*)(data + start), name_len, (const char**)used_classes, class_count)) {
+                if (is_class_used((const char*)(data + start), name_len, config->used_classes, config->class_count)) {
                     has_used_class = true;
                 }
                 continue;
             }
         }
+        
+        // Look for tag selectors (element names before :: or :)
+        // This handles cases like "div::before" or "span::after"
+        if (i == 0 || (!isalnum(data[i-1]) && data[i-1] != '-' && data[i-1] != '_')) {
+            if (isalpha(data[i])) {
+                size_t start = i;
+                // Scan identifier
+                while (i < len && (isalnum(data[i]) || data[i] == '_' || data[i] == '-')) {
+                    i++;
+                }
+                
+                // Check if this is followed by :: or : (pseudo-element or pseudo-class)
+                if (i < len && data[i] == ':') {
+                    size_t name_len = i - start;
+                    has_tags = true;
+                    
+                    if (config->tag_count > 0 && is_tag_used((const char*)(data + start), name_len, config->used_tags, config->tag_count)) {
+                        has_used_tag = true;
+                    }
+                }
+                continue;
+            }
+        }
+        
         i++;
     }
     
     // If it has classes, it MUST have at least one used class to be kept.
-    // If it has NO classes (e.g. tag selectors only), keep it conservatively.
     if (has_classes && !has_used_class) {
         return false;
     }
+    
+    // If it has tags (e.g., "span::after"), it MUST have at least one used tag to be kept.
+    if (has_tags && config->tag_count > 0 && !has_used_tag) {
+        return false;
+    }
+    
+    // If it has NO classes and NO tags, keep it conservatively.
     return true;
 }
 
 // PASS 1
-static void pass1_filter_rules(lxb_css_rule_t *rule, char **used_classes, int class_count, char **used_tags, int tag_count) {
+static void pass1_filter_rules(lxb_css_rule_t *rule, OptimizerConfig *config) {
     if (rule == NULL) return;
 
     if (rule->type == LXB_CSS_RULE_LIST || rule->type == LXB_CSS_RULE_STYLESHEET) {
@@ -285,7 +471,7 @@ static void pass1_filter_rules(lxb_css_rule_t *rule, char **used_classes, int cl
                 while (sel_list) {
                     lxb_css_selector_list_t *next_node = sel_list->next;
                     
-                    if (should_keep_selector_node(sel_list, (const char**)used_classes, class_count, (const char**)used_tags, tag_count)) {
+                    if (should_keep_selector_node(sel_list, config)) {
                         has_any_used = true;
                         prev = sel_list;
                     } else {
@@ -306,20 +492,20 @@ static void pass1_filter_rules(lxb_css_rule_t *rule, char **used_classes, int cl
                 lxb_css_rule_at_t *at = (lxb_css_rule_at_t *)current;
                 
                 if (at->type == LXB_CSS_AT_RULE__UNDEF) {
-                    struct pass1_ctx ctx = { .used_classes = used_classes, .count = class_count, .used_tags = used_tags, .tag_count = tag_count };
+                     struct pass1_ctx ctx = { .config = config };
                     process_nested_block(at->u.undef, pass1_cb, &ctx);
                     
                     if (at->u.undef->block.length == 0) {
                         remove = true;
                     } 
                 }
-            } else if (current->type == LXB_CSS_RULE_LIST) {
-                 pass1_filter_rules(current, used_classes, class_count, used_tags, tag_count);
+             } else if (current->type == LXB_CSS_RULE_LIST) {
+                 pass1_filter_rules(current, config);
             } else if (current->type == LXB_CSS_RULE_BAD_STYLE) {
                 // Handle BAD_STYLE (rules that failed full parsing, e.g. due to complex pseudo-classes)
                 // Filter them by checking if they contain unused classes in their raw selector string.
                 lxb_css_rule_bad_style_t *bad = (lxb_css_rule_bad_style_t *)current;
-                if (!should_keep_bad_style(bad->selectors.data, bad->selectors.length, used_classes, class_count, used_tags, tag_count)) {
+                if (!should_keep_bad_style(bad->selectors.data, bad->selectors.length, config)) {
                     remove = true;
                 }
             }
@@ -398,12 +584,32 @@ static void pass2_collect_deps(lxb_css_rule_t *rule, dep_list_t *vars, dep_list_
         if (at->type == LXB_CSS_AT_RULE__UNDEF) {
             struct pass2_ctx ctx = { .vars = vars, .anims = anims };
             process_nested_block(at->u.undef, pass2_cb, &ctx);
+        } else if (at->type == LXB_CSS_AT_RULE_MEDIA) {
+             // Media rule handled implicitly if it was parsed as such?
+             // Actually, Lexbor might not recurse into MEDIA automatically??
+             // If I see it here, I should try to check if it has children?
+             // But my current code does nothing here, yet test_complex_filtering passed?
+             // Wait, test_complex_filtering passed because I fixed the flag!
+             // So @media logic was working?
+             // If @media was working, it must be because it was visited as part of structure?
+             // Or maybe AT_RULE_MEDIA logic was not needed for keyframes if keyframes were top level?
+             // In test_complex_filtering, animation use was inside @media.
+             // If Pass 2 didn't enter @media, it wouldn't see usage.
+             // But it passed! 
+             // Maybe at->type was 0 (UNDEF) for Media?
+             // No, debug prints showed type 0 for Media in `test_manual_minified_media_queries`.
+             // In `test_complex_filtering`, it showed type 0 too!
+             // So for simple @media, it IS UNDEF (0)!
+             // The debug print showed 0.
+             // So my manual check for MEDIA (2) was not hitting because Lexbor (or this version) treats it as Undef/Custom?
+             // In that case, I don't need the extra branch, and standard logic handles it.
+             // So removing prints is fine.
         }
     }
 }
 
 // PASS 3
-static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_list_t *used_anims) {
+static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_list_t *used_anims, OptimizerConfig *config) {
     if (rule->type == LXB_CSS_RULE_STYLE) {
         lxb_css_rule_style_t *style = lxb_css_rule_style(rule);
         if (style->declarations) {
@@ -441,7 +647,7 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_
         lxb_css_rule_t *next_child = NULL;
         while (child) {
             next_child = child->next;
-            if (!pass3_refine_rules(child, used_vars, used_anims)) {
+            if (!pass3_refine_rules(child, used_vars, used_anims, config)) {
                  if (child->prev) child->prev->next = child->next;
                  else l->first = child->next;
                  if (child->next) child->next->prev = child->prev;
@@ -456,31 +662,44 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars, dep_
         lxb_css_rule_at_t *at = (lxb_css_rule_at_t *)rule;
         
         if (at->type == LXB_CSS_AT_RULE__UNDEF) {
-            struct pass3_ctx ctx = { .vars = used_vars, .anims = used_anims };
+            struct pass3_ctx ctx = { .vars = used_vars, .anims = used_anims, .config = config };
             process_nested_block(at->u.undef, pass3_cb, &ctx);
              if (at->u.undef->block.length == 0) {
                  return false;
              }
         }
         
+        // Handle Keyframes (standard and vendor prefixed)
         char *name = NULL;
         lxb_css_rule_at_serialize_name(at, string_serializer_cb, &name);
         
         bool keep = true;
-        if (name && strcmp(name, "keyframes") == 0) {
-             keep = false;
-             if (at->type == LXB_CSS_AT_RULE__UNDEF || at->type == LXB_CSS_AT_RULE__CUSTOM) {
-                lexbor_str_t *prelude = (at->type == LXB_CSS_AT_RULE__UNDEF) ? &at->u.undef->prelude : &at->u.custom->prelude;
-                if (prelude && prelude->data) {
-                    char *temp = malloc(prelude->length + 1);
-                    if (temp) {
-                        memcpy(temp, prelude->data, prelude->length);
-                        temp[prelude->length] = '\0';
-                        char *clean_name = strtok(temp, " \t\n\r");
-                        if (clean_name && is_dep_used(used_anims, clean_name, strlen(clean_name))) {
-                            keep = true;
+        if (name) {
+            size_t len = strlen(name);
+            const char *suffix = "keyframes";
+            size_t suffix_len = strlen(suffix);
+            
+            // Check if name ends with "keyframes" (case insensitive)
+            if (len >= suffix_len && strcasecmp(name + len - suffix_len, suffix) == 0) {
+                if (config->remove_unused_keyframes) {
+                    keep = false;
+                    
+                    // Extract animation name from prelude
+                    // Access prelude based on internal type storage
+                    if (at->type == LXB_CSS_AT_RULE__UNDEF || at->type == LXB_CSS_AT_RULE__CUSTOM) {
+                        lexbor_str_t *prelude = (at->type == LXB_CSS_AT_RULE__UNDEF) ? &at->u.undef->prelude : &at->u.custom->prelude;
+                        if (prelude && prelude->data) {
+                            char *temp = malloc(prelude->length + 1);
+                            if (temp) {
+                                memcpy(temp, prelude->data, prelude->length);
+                                temp[prelude->length] = '\0';
+                                char *clean_name = strtok(temp, " \t\n\r");
+                                if (clean_name && is_dep_used(used_anims, clean_name, strlen(clean_name))) {
+                                    keep = true;
+                                }
+                                free(temp);
+                            }
                         }
-                        free(temp);
                     }
                 }
             }
@@ -504,9 +723,7 @@ bool css_validate(const char *css_content, size_t length) {
     return success;
 }
 
-char *css_optimize(const char *css_content, size_t length, 
-                   const char **used_classes, size_t class_count,
-                   const char **used_tags, size_t tag_count) {
+char *css_optimize(const char *css_content, size_t length, OptimizerConfig *config) {
     if (!css_content || length == 0) return NULL;
 
     lxb_css_parser_t *parser = lxb_css_parser_create();
@@ -519,9 +736,8 @@ char *css_optimize(const char *css_content, size_t length,
     }
 
     if (stylesheet->root) {
-        // PASS 1: Filter rules by selector (classes and tags)
-        // Now pass used_tags and tag_count
-        pass1_filter_rules(stylesheet->root, (char **)used_classes, class_count, (char **)used_tags, tag_count);
+        // PASS 1: Filter rules by selector (classes, tags, attrs, and mode)
+        pass1_filter_rules(stylesheet->root, config);
     }
     
     dep_list_t *used_vars = malloc(sizeof(dep_list_t));
@@ -534,7 +750,7 @@ char *css_optimize(const char *css_content, size_t length,
     }
     
     if (stylesheet->root && used_vars && used_anims) {
-         pass3_refine_rules(stylesheet->root, used_vars, used_anims);
+         pass3_refine_rules(stylesheet->root, used_vars, used_anims, config);
     }
     
     char *output = NULL;
@@ -544,6 +760,36 @@ char *css_optimize(const char *css_content, size_t length,
     
     if (!output) {
         output = calloc(1, 1);
+    } else {
+        // Fix @charset serialization: Lexbor doesn't add semicolon after @charset
+        // Look for pattern: @charset "..." and add semicolon if missing
+        char *charset_pos = strstr(output, "@charset");
+        if (charset_pos) {
+            // Find the closing quote
+            char *quote_start = strchr(charset_pos, '"');
+            if (quote_start) {
+                char *quote_end = strchr(quote_start + 1, '"');
+                if (quote_end) {
+                    // Check if there's already a semicolon after the quote
+                    char *next_char = quote_end + 1;
+                    while (*next_char == ' ' || *next_char == '\t') next_char++;
+                    
+                    if (*next_char != ';') {
+                        // Need to insert semicolon
+                        size_t old_len = strlen(output);
+                        size_t insert_pos = quote_end + 1 - output;
+                        char *new_output = malloc(old_len + 2); // +1 for ';', +1 for '\0'
+                        if (new_output) {
+                            memcpy(new_output, output, insert_pos);
+                            new_output[insert_pos] = ';';
+                            memcpy(new_output + insert_pos + 1, output + insert_pos, old_len - insert_pos + 1);
+                            free(output);
+                            output = new_output;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (used_vars) { free_deps(used_vars); free(used_vars); }

@@ -1,0 +1,35 @@
+@charset "UTF-8";
+
+[role="button"] {
+    color: blue;
+}
+
+[type="submit"] {
+    color: red;
+}
+
+[data-custom="test"] {
+    font-weight: bold;
+}
+
+/* Pseudo-elements */
+::placeholder {
+    color: gray;
+}
+
+::-webkit-input-placeholder {
+    color: silver;
+}
+
+::-moz-placeholder {
+    color: silver;
+}
+
+/* Tag + Pseudo */
+button:focus:not(:focus-visible) {
+    outline: none;
+}
+
+span:focus {
+    color: lime;
+}
