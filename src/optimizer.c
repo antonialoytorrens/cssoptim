@@ -21,18 +21,21 @@ typedef struct garbage_node {
 
 static garbage_node_t *garbage_head = NULL;
 
-static void register_garbage(char *ptr) {
+/* Returns true on success, false if the node allocation failed.
+ * On failure the caller is responsible for freeing ptr. */
+static bool register_garbage(char *ptr) {
   if (!ptr)
-    return;
+    return true;
   garbage_node_t *node = malloc(sizeof(garbage_node_t));
-  if (node) {
-    node->ptr = ptr;
-    node->next = garbage_head;
-    garbage_head = node;
-  }
+  if (!node)
+    return false;
+  node->ptr = ptr;
+  node->next = garbage_head;
+  garbage_head = node;
+  return true;
 }
 
-static void clear_garbage() {
+static void clear_garbage(void) {
   garbage_node_t *node = garbage_head;
   while (node) {
     garbage_node_t *next = node->next;
@@ -44,22 +47,32 @@ static void clear_garbage() {
   garbage_head = NULL;
 }
 
-// --- Dependency List ---
-#define MAX_DEPS 1024
+// --- Dependency List (dynamic, unbounded) ---
 typedef struct {
-  char *items[MAX_DEPS];
+  char **items;
   size_t count;
+  size_t capacity;
 } dep_list_t;
 
 static void add_dep(dep_list_t *list, const char *name, size_t len) {
-  if (list->count >= MAX_DEPS)
-    return;
+  /* Check for duplicate */
   for (size_t i = 0; i < list->count; i++) {
     if (strncmp(list->items[i], name, len) == 0 &&
         list->items[i][len] == '\0') {
       return;
     }
   }
+
+  /* Grow array if needed */
+  if (list->count >= list->capacity) {
+    size_t new_capacity = (list->capacity == 0) ? 16 : list->capacity * 2;
+    char **new_items = realloc(list->items, new_capacity * sizeof(char *));
+    if (!new_items)
+      return; /* OOM: silently skip; dependency won't be tracked */
+    list->items = new_items;
+    list->capacity = new_capacity;
+  }
+
   char *copy = malloc(len + 1);
   if (!copy)
     return;
@@ -69,10 +82,12 @@ static void add_dep(dep_list_t *list, const char *name, size_t len) {
 }
 
 static void free_deps(dep_list_t *list) {
-  for (size_t i = 0; i < list->count; i++) {
+  for (size_t i = 0; i < list->count; i++)
     free(list->items[i]);
-  }
+  free(list->items);
+  list->items = NULL;
   list->count = 0;
+  list->capacity = 0;
 }
 
 static bool is_dep_used(const dep_list_t *list, const char *name, size_t len) {
@@ -85,17 +100,25 @@ static bool is_dep_used(const dep_list_t *list, const char *name, size_t len) {
   return false;
 }
 
-// --- Serializer Callback ---
+// --- Serializer ---
+
+/* Buffer that tracks both data and accumulated length to avoid O(n²)
+ * strlen calls in the serializer callback. */
+typedef struct {
+  char *data;
+  size_t len;
+} serialize_buf_t;
+
 static lxb_status_t string_serializer_cb(const lxb_char_t *data, size_t len,
                                          void *ctx) {
-  char **buffer = (char **)ctx;
-  size_t current_len = *buffer ? strlen(*buffer) : 0;
-  char *new_buf = realloc(*buffer, current_len + len + 1);
-  if (!new_buf)
+  serialize_buf_t *buf = (serialize_buf_t *)ctx;
+  char *new_data = realloc(buf->data, buf->len + len + 1);
+  if (!new_data)
     return LXB_STATUS_ERROR;
-  *buffer = new_buf;
-  memcpy(*buffer + current_len, data, len);
-  (*buffer)[current_len + len] = '\0';
+  buf->data = new_data;
+  memcpy(buf->data + buf->len, data, len);
+  buf->len += len;
+  buf->data[buf->len] = '\0';
   return LXB_STATUS_OK;
 }
 
@@ -108,6 +131,8 @@ static void process_nested_block(lxb_css_at_rule__undef_t *undef,
     return;
 
   lxb_css_parser_t *parser = lxb_css_parser_create();
+  if (!parser)
+    return;
   lxb_css_parser_init(parser, NULL);
   lxb_css_stylesheet_t *ss =
       lxb_css_stylesheet_parse(parser, undef->block.data, undef->block.length);
@@ -115,13 +140,19 @@ static void process_nested_block(lxb_css_at_rule__undef_t *undef,
   if (ss && ss->root) {
     cb(ss->root, ctx);
 
-    char *new_block = NULL;
-    lxb_css_rule_serialize(ss->root, string_serializer_cb, &new_block);
+    serialize_buf_t new_block_buf = {NULL, 0};
+    lxb_css_rule_serialize(ss->root, string_serializer_cb, &new_block_buf);
 
-    if (new_block) {
-      undef->block.data = (lxb_char_t *)new_block;
-      undef->block.length = strlen(new_block);
-      register_garbage(new_block);
+    if (new_block_buf.data) {
+      if (!register_garbage(new_block_buf.data)) {
+        /* Garbage tracking failed: free now rather than leak the pointer. */
+        free(new_block_buf.data);
+        undef->block.data = (lxb_char_t *)"";
+        undef->block.length = 0;
+      } else {
+        undef->block.data = (lxb_char_t *)new_block_buf.data;
+        undef->block.length = new_block_buf.len;
+      }
     } else {
       undef->block.data = (lxb_char_t *)"";
       undef->block.length = 0;
@@ -131,7 +162,6 @@ static void process_nested_block(lxb_css_at_rule__undef_t *undef,
   lxb_css_parser_destroy(parser, true);
 }
 
-// --- Forward Declarations ---
 // --- Forward Declarations ---
 static void pass1_filter_rules(lxb_css_rule_t *rule, OptimizerConfig *config);
 static void pass2_collect_deps(lxb_css_rule_t *rule, dep_list_t *vars,
@@ -206,11 +236,13 @@ static bool is_attr_used(lxb_css_selector_t *sel, const char **used_attrs,
   if (!used_attrs || attr_count == 0 || !sel->name.data)
     return false;
 
-  // Check attribute name + value if present
   char *match = NULL;
   if (sel->u.attribute.value.data) {
     size_t nlen = sel->name.length;
     size_t vlen = sel->u.attribute.value.length;
+    /* Guard against size_t overflow before malloc */
+    if (nlen > (size_t)-1 - vlen || nlen + vlen > (size_t)-1 - 2)
+      return false;
     match = malloc(nlen + vlen + 2);
     if (match) {
       memcpy(match, sel->name.data, nlen);
@@ -239,8 +271,6 @@ static bool is_attr_used(lxb_css_selector_t *sel, const char **used_attrs,
   free(match);
   return found;
 }
-
-// Helper: Check selector chain
 
 static bool check_form_pseudo_removal(const char *name,
                                       OptimizerConfig *config) {
@@ -299,10 +329,8 @@ static bool check_form_pseudo_removal(const char *name,
     }
 
     if (name_match) {
-      // Check requirements
       bool fulfilled = false;
 
-      // Check attributes
       if (rules[i].attrs[0]) {
         for (size_t k = 0; rules[i].attrs[k]; k++) {
           for (size_t a = 0; a < config->attr_count; a++) {
@@ -314,7 +342,6 @@ static bool check_form_pseudo_removal(const char *name,
         }
       }
 
-      // Check tags
       if (rules[i].tags[0]) {
         for (size_t k = 0; rules[i].tags[k]; k++) {
           for (size_t t = 0; t < config->tag_count; t++) {
@@ -328,10 +355,7 @@ static bool check_form_pseudo_removal(const char *name,
 
     check_done:
       if (!fulfilled)
-        return true; // Remove because context missing
-      // If fulfilled, we don't return false yet, because maybe there are other
-      // rules? No, specific pseudo matches one rule. If fulfilled, we keep it
-      // (return false).
+        return true;
       return false;
     }
   }
@@ -358,11 +382,9 @@ static bool should_keep_selector_node(lxb_css_selector_list_t *list,
         return false;
       }
     } else if (sel->type == LXB_CSS_SELECTOR_TYPE_ELEMENT) {
-      // Check for universal selector '*'
       if (sel->name.length == 1 && sel->name.data[0] == '*') {
         if (config->mode == LXB_CSS_OPTIM_MODE_SAFE ||
             config->mode == LXB_CSS_OPTIM_MODE_CONSERVATIVE) {
-          // SAFE and CONSERVATIVE always keep universal selectors
           return true;
         }
       }
@@ -384,13 +406,11 @@ static bool should_keep_selector_node(lxb_css_selector_list_t *list,
         return false;
       }
 
-      // Conservative mode keeps browser-specific pseudo-elements
       if (config->mode == LXB_CSS_OPTIM_MODE_CONSERVATIVE) {
         if (sel->name.length > 5 &&
             (strncasecmp((const char *)sel->name.data, "-webkit-", 8) == 0 ||
              strncasecmp((const char *)sel->name.data, "-moz-", 5) == 0)) {
-          // Keep browser-prefixed pseudo-elements if not explicitly removed by
-          // above check
+          /* Keep browser-prefixed pseudo-elements */
         }
       }
     }
@@ -401,30 +421,21 @@ static bool should_keep_selector_node(lxb_css_selector_list_t *list,
 
 // --- Implementations ---
 
-// Helper: Check if a bad style rule (raw string) should be kept
 static bool should_keep_bad_style(const lxb_char_t *data, size_t len,
                                   OptimizerConfig *config) {
   (void)config;
   if (!data || len == 0)
     return false;
 
-  // Check if this BAD_STYLE rule contains any form pseudo-elements we want to
-  // remove
   if (config->remove_form_pseudoelements) {
-    // Quick string search for known pseudos
-    // Ensure to handle potential overlaps or simple inclusion
-    // Since these are specific names, strstr is okay if we verify full name or
-    // prefix/suffix.
     char *copy = malloc(len + 1);
     if (copy) {
       memcpy(copy, data, len);
       copy[len] = '\0';
 
-      // Removing :: is cleaner for checking vs our helper
       char *p = copy;
       while ((p = strstr(p, "::"))) {
-        char *pseudo = p; // Starts with ::
-        // Find end of identifier
+        char *pseudo = p;
         char *end = pseudo + 2;
         while (*end && (isalnum(*end) || *end == '-' || *end == '_'))
           end++;
@@ -433,7 +444,7 @@ static bool should_keep_bad_style(const lxb_char_t *data, size_t len,
         *end = '\0';
         if (check_form_pseudo_removal(pseudo, config)) {
           free(copy);
-          return false; // Remove this rule
+          return false;
         }
         *end = saved;
         p = end;
@@ -449,16 +460,13 @@ static bool should_keep_bad_style(const lxb_char_t *data, size_t len,
 
   size_t i = 0;
   while (i < len) {
-    // Look for class start '.'
     if (data[i] == '.') {
-      // Check if next is identifier start
       if (i + 1 < len &&
           (isalpha(data[i + 1]) || data[i + 1] == '_' || data[i + 1] == '-')) {
         has_classes = true;
-        i++; // Skip dot
+        i++;
 
         size_t start = i;
-        // Scan identifier
         while (i < len &&
                (isalnum(data[i]) || data[i] == '_' || data[i] == '-')) {
           i++;
@@ -473,19 +481,15 @@ static bool should_keep_bad_style(const lxb_char_t *data, size_t len,
       }
     }
 
-    // Look for tag selectors (element names before :: or :)
-    // This handles cases like "div::before" or "span::after"
     if (i == 0 ||
         (!isalnum(data[i - 1]) && data[i - 1] != '-' && data[i - 1] != '_')) {
       if (isalpha(data[i])) {
         size_t start = i;
-        // Scan identifier
         while (i < len &&
                (isalnum(data[i]) || data[i] == '_' || data[i] == '-')) {
           i++;
         }
 
-        // Check if this is followed by :: or : (pseudo-element or pseudo-class)
         if (i < len && data[i] == ':') {
           size_t name_len = i - start;
           has_tags = true;
@@ -503,18 +507,12 @@ static bool should_keep_bad_style(const lxb_char_t *data, size_t len,
     i++;
   }
 
-  // If it has classes, it MUST have at least one used class to be kept.
-  if (has_classes && !has_used_class) {
+  if (has_classes && !has_used_class)
     return false;
-  }
 
-  // If it has tags (e.g., "span::after"), it MUST have at least one used tag to
-  // be kept.
-  if (has_tags && config->tag_count > 0 && !has_used_tag) {
+  if (has_tags && config->tag_count > 0 && !has_used_tag)
     return false;
-  }
 
-  // If it has NO classes and NO tags, keep it conservatively.
   return true;
 }
 
@@ -558,9 +556,9 @@ static void pass1_filter_rules(lxb_css_rule_t *rule, OptimizerConfig *config) {
           sel_list = next_node;
         }
 
-        if (!has_any_used) {
+        if (!has_any_used)
           remove = true;
-        }
+
       } else if (current->type == LXB_CSS_RULE_AT_RULE) {
         lxb_css_rule_at_t *at = (lxb_css_rule_at_t *)current;
 
@@ -568,16 +566,12 @@ static void pass1_filter_rules(lxb_css_rule_t *rule, OptimizerConfig *config) {
           struct pass1_ctx ctx = {.config = config};
           process_nested_block(at->u.undef, pass1_cb, &ctx);
 
-          if (at->u.undef->block.length == 0) {
+          if (at->u.undef->block.length == 0)
             remove = true;
-          }
         }
       } else if (current->type == LXB_CSS_RULE_LIST) {
         pass1_filter_rules(current, config);
       } else if (current->type == LXB_CSS_RULE_BAD_STYLE) {
-        // Handle BAD_STYLE (rules that failed full parsing, e.g. due to complex
-        // pseudo-classes) Filter them by checking if they contain unused
-        // classes in their raw selector string.
         lxb_css_rule_bad_style_t *bad = (lxb_css_rule_bad_style_t *)current;
         if (!should_keep_bad_style(bad->selectors.data, bad->selectors.length,
                                    config)) {
@@ -614,12 +608,14 @@ static void pass2_collect_deps(lxb_css_rule_t *rule, dep_list_t *vars,
         if (decl_rule->type == LXB_CSS_RULE_DECLARATION) {
           lxb_css_rule_declaration_t *decl =
               (lxb_css_rule_declaration_t *)decl_rule;
-          char *name = NULL;
-          char *value = NULL;
+          serialize_buf_t name_buf = {NULL, 0};
+          serialize_buf_t value_buf = {NULL, 0};
           lxb_css_rule_declaration_serialize_name(decl, string_serializer_cb,
-                                                  &name);
+                                                  &name_buf);
           lxb_css_rule_declaration_serialize(decl, string_serializer_cb,
-                                             &value);
+                                             &value_buf);
+          char *name = name_buf.data;
+          char *value = value_buf.data;
 
           if (value) {
             char *p = value;
@@ -652,10 +648,8 @@ static void pass2_collect_deps(lxb_css_rule_t *rule, dep_list_t *vars,
               }
             }
           }
-          if (name)
-            free(name);
-          if (value)
-            free(value);
+          free(name);
+          free(value);
         }
         decl_rule = decl_rule->next;
       }
@@ -696,9 +690,10 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars,
         if (decl_rule->type == LXB_CSS_RULE_DECLARATION) {
           lxb_css_rule_declaration_t *decl =
               (lxb_css_rule_declaration_t *)decl_rule;
-          char *name = NULL;
+          serialize_buf_t name_buf = {NULL, 0};
           lxb_css_rule_declaration_serialize_name(decl, string_serializer_cb,
-                                                  &name);
+                                                  &name_buf);
+          char *name = name_buf.data;
 
           if (name && strncmp(name, "--", 2) == 0) {
             if (!is_dep_used(used_vars, name + 2, strlen(name) - 2)) {
@@ -716,8 +711,7 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars,
               lxb_css_rule_destroy(decl_rule, true);
             }
           }
-          if (name)
-            free(name);
+          free(name);
         }
         decl_rule = next_decl;
       }
@@ -751,14 +745,14 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars,
       struct pass3_ctx ctx = {
           .vars = used_vars, .anims = used_anims, .config = config};
       process_nested_block(at->u.undef, pass3_cb, &ctx);
-      if (at->u.undef->block.length == 0) {
+      if (at->u.undef->block.length == 0)
         return false;
-      }
     }
 
-    // Handle Keyframes (standard and vendor prefixed)
-    char *name = NULL;
-    lxb_css_rule_at_serialize_name(at, string_serializer_cb, &name);
+    /* Handle @keyframes (standard and vendor-prefixed) */
+    serialize_buf_t name_buf = {NULL, 0};
+    lxb_css_rule_at_serialize_name(at, string_serializer_cb, &name_buf);
+    char *name = name_buf.data;
 
     bool keep = true;
     if (name) {
@@ -766,14 +760,11 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars,
       const char *suffix = "keyframes";
       size_t suffix_len = strlen(suffix);
 
-      // Check if name ends with "keyframes" (case insensitive)
       if (len >= suffix_len &&
           strcasecmp(name + len - suffix_len, suffix) == 0) {
         if (config->remove_unused_keyframes) {
           keep = false;
 
-          // Extract animation name from prelude
-          // Access prelude based on internal type storage
           if (at->type == LXB_CSS_AT_RULE__UNDEF ||
               at->type == LXB_CSS_AT_RULE__CUSTOM) {
             lexbor_str_t *prelude = (at->type == LXB_CSS_AT_RULE__UNDEF)
@@ -796,8 +787,7 @@ static bool pass3_refine_rules(lxb_css_rule_t *rule, dep_list_t *used_vars,
         }
       }
     }
-    if (name)
-      free(name);
+    free(name);
     return keep;
   }
   return true;
@@ -809,6 +799,8 @@ bool css_validate(const char *css_content, size_t length) {
   if (!css_content || length == 0)
     return false;
   lxb_css_parser_t *parser = lxb_css_parser_create();
+  if (!parser)
+    return false;
   lxb_css_parser_init(parser, NULL);
   lxb_css_stylesheet_t *stylesheet =
       lxb_css_stylesheet_parse(parser, (const lxb_char_t *)css_content, length);
@@ -824,6 +816,8 @@ char *css_optimize(const char *css_content, size_t length,
     return NULL;
 
   lxb_css_parser_t *parser = lxb_css_parser_create();
+  if (!parser)
+    return NULL;
   lxb_css_parser_init(parser, NULL);
   lxb_css_stylesheet_t *stylesheet =
       lxb_css_stylesheet_parse(parser, (const lxb_char_t *)css_content, length);
@@ -834,7 +828,6 @@ char *css_optimize(const char *css_content, size_t length,
   }
 
   if (stylesheet->root) {
-    // PASS 1: Filter rules by selector (classes, tags, attrs, and mode)
     pass1_filter_rules(stylesheet->root, config);
   }
 
@@ -853,33 +846,30 @@ char *css_optimize(const char *css_content, size_t length,
     pass3_refine_rules(stylesheet->root, used_vars, used_anims, config);
   }
 
-  char *output = NULL;
+  serialize_buf_t output_buf = {NULL, 0};
   if (stylesheet->root) {
-    lxb_css_rule_serialize(stylesheet->root, string_serializer_cb, &output);
+    lxb_css_rule_serialize(stylesheet->root, string_serializer_cb, &output_buf);
   }
+  char *output = output_buf.data;
 
   if (!output) {
     output = calloc(1, 1);
   } else {
-    // Fix @charset serialization: Lexbor doesn't add semicolon after @charset
-    // Look for pattern: @charset "..." and add semicolon if missing
+    /* Fix @charset serialization: Lexbor doesn't add semicolon after @charset */
     char *charset_pos = strstr(output, "@charset");
     if (charset_pos) {
-      // Find the closing quote
       char *quote_start = strchr(charset_pos, '"');
       if (quote_start) {
         char *quote_end = strchr(quote_start + 1, '"');
         if (quote_end) {
-          // Check if there's already a semicolon after the quote
           char *next_char = quote_end + 1;
           while (*next_char == ' ' || *next_char == '\t')
             next_char++;
 
           if (*next_char != ';') {
-            // Need to insert semicolon
             size_t old_len = strlen(output);
-            size_t insert_pos = quote_end + 1 - output;
-            char *new_output = malloc(old_len + 2); // +1 for ';', +1 for '\0'
+            size_t insert_pos = (size_t)(quote_end + 1 - output);
+            char *new_output = malloc(old_len + 2);
             if (new_output) {
               memcpy(new_output, output, insert_pos);
               new_output[insert_pos] = ';';

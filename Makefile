@@ -4,7 +4,7 @@ BUILD_DIR = build
 DEPS_DIR = deps
 INC_DIR = include
 
-CC = clang
+CC = gcc
 CFLAGS = -std=c99 -Wall -Wextra -pedantic -g -I$(INC_DIR) -Ideps -Ideps/unity -Ideps/argparse
 LDFLAGS = /usr/lib/x86_64-linux-gnu/liblexbor.so
 

@@ -1,6 +1,9 @@
 #include "cssoptim/optimizer.h"
 #include "cssoptim/scanner.h"
 #include "unity.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static char *read_fixture_file(const char *path, long *out_len) {
   FILE *f = fopen(path, "rb");

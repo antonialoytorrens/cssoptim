@@ -9,13 +9,21 @@
 
 /* Implementation of scanner logic using Lexbor. */
 
+/* Maximum HTML nesting depth to traverse; prevents stack overflow on
+ * adversarial or malformed documents with thousands of nested elements. */
+#define MAX_ELEMENT_DEPTH 1000
+
 /* DOM Traversal Helper
  * Recursively scans an element and its children for the 'class' attribute and
- * tag names.
+ * tag names. depth is incremented on each recursive call and checked against
+ * MAX_ELEMENT_DEPTH.
  */
 static lxb_status_t scan_element(lxb_dom_element_t *element,
                                  string_list_t *classes, string_list_t *tags,
-                                 string_list_t *attrs) {
+                                 string_list_t *attrs, unsigned int depth) {
+  if (depth > MAX_ELEMENT_DEPTH)
+    return LXB_STATUS_OK;
+
   // 1. Collect tag name
   if (tags) {
     const lxb_char_t *local_name = lxb_dom_element_local_name(element, NULL);
@@ -39,14 +47,18 @@ static lxb_status_t scan_element(lxb_dom_element_t *element,
         if (value && val_len > 0) {
           // Add name=value pair
           size_t name_len = strlen((const char *)name);
-          char *pair = malloc(name_len + val_len + 2);
-          if (pair) {
-            memcpy(pair, name, name_len);
-            pair[name_len] = '=';
-            memcpy(pair + name_len + 1, value, val_len);
-            pair[name_len + 1 + val_len] = '\0';
-            string_list_add(attrs, pair);
-            free(pair);
+          /* Guard against size_t overflow before malloc */
+          if (name_len <= (size_t)-1 - val_len &&
+              name_len + val_len <= (size_t)-1 - 2) {
+            char *pair = malloc(name_len + val_len + 2);
+            if (pair) {
+              memcpy(pair, name, name_len);
+              pair[name_len] = '=';
+              memcpy(pair + name_len + 1, value, val_len);
+              pair[name_len + 1 + val_len] = '\0';
+              string_list_add(attrs, pair);
+              free(pair);
+            }
           }
         }
       }
@@ -84,7 +96,8 @@ static lxb_status_t scan_element(lxb_dom_element_t *element,
       lxb_dom_node_first_child(lxb_dom_interface_node(element));
   while (child) {
     if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-      scan_element(lxb_dom_interface_element(child), classes, tags, attrs);
+      scan_element(lxb_dom_interface_element(child), classes, tags, attrs,
+                   depth + 1);
     }
     child = child->next;
   }
@@ -112,13 +125,13 @@ void scan_html(const char *content, size_t length, string_list_t *classes,
   lxb_dom_element_t *body =
       (lxb_dom_element_t *)lxb_html_document_body_element(document);
   if (body) {
-    scan_element(body, classes, tags, attrs);
+    scan_element(body, classes, tags, attrs, 0);
   } else {
     lxb_dom_node_t *node =
         lxb_dom_node_first_child(lxb_dom_interface_node(document));
     while (node) {
       if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-        scan_element(lxb_dom_interface_element(node), classes, tags, attrs);
+        scan_element(lxb_dom_interface_element(node), classes, tags, attrs, 0);
       }
       node = node->next;
     }
