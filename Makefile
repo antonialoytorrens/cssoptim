@@ -73,3 +73,14 @@ fmt:
 
 lint:
 	clang-tidy $(SRCS) $(TEST_SRCS) -- $(CFLAGS)
+
+# --- SonarQube ---
+SCAN_STD ?= c99
+SCAN_INCLUDES ?= -Iinclude -Ideps -Ideps/unity -Ideps/argparse
+
+ifneq (,$(wildcard ./.env))
+include .env
+export
+endif
+
+include scan.mk

@@ -99,3 +99,4 @@ tags
 
 # Custom
 build
+.env
